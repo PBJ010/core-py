@@ -339,24 +339,12 @@ See [benchmarks/calculator/README.md](benchmarks/calculator/README.md) for full 
 
 ---
 
-## Anonymous Telemetry
+## Usage data
 
-OpenSymbolicAI collects anonymous usage data to help us understand adoption and
-prioritize development. **No prompts, responses, API keys, or personal data are
-ever collected.**
-
-What we collect: framework version, Python version, OS, blueprint type used,
-LLM provider name, and whether the run succeeded.
-
-### Opting Out
-
-Set either environment variable:
-
-```bash
-export OPENSYMBOLICAI_TELEMETRY_DISABLED=1
-# or the universal convention:
-export DO_NOT_TRACK=1
-```
+This distribution does not include automatic usage telemetry or PostHog event
+collection. Agent runs do not send usage events to the framework maintainers.
+Configured LLM providers and explicitly configured observability exporters
+continue to receive the requests or traces needed for their operation.
 
 ---
 

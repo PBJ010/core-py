@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import contextlib
 import hashlib
 import inspect
 import json
@@ -64,7 +63,6 @@ from opensymbolicai.observability.events import (
     RunErrorSummary,
 )
 from opensymbolicai.observability.tracer import Tracer
-from opensymbolicai.telemetry import TelemetryProperties, record_event
 
 # Default safe builtins allowed in execution
 DEFAULT_ALLOWED_BUILTINS: dict[str, Any] = {
@@ -1785,14 +1783,11 @@ Generate Python code to accomplish this task: {task}
                 {"task": task, "config": self.config.model_dump(exclude={"observability"})},
             )
 
-        result: OrchestrationResult | None = None
         try:
-            result = self._run_inner(task, run_span)
-            return result
+            return self._run_inner(task, run_span)
         finally:
             if self._tracer:
                 self._tracer.flush()
-            _emit_telemetry(self, success=result is not None and result.success)
 
     def _run_inner(
         self, task: str, run_span: str | None
@@ -1968,19 +1963,4 @@ Generate Python code to accomplish this task: {task}
             plan=plan_result.plan if plan_result else None,
             plan_attempts=plan_attempts,
             task=task,
-        )
-
-
-def _emit_telemetry(agent: PlanExecute, *, success: bool) -> None:
-    """Emit anonymous usage telemetry after a run completes."""
-    with contextlib.suppress(Exception):
-        record_event(
-            "agent_run",
-            TelemetryProperties(
-                blueprint=type(agent).__name__,
-                llm_provider=agent._llm.config.provider_name,
-                llm_model=agent._llm.config.model,
-                success=success,
-                primitive_count=len(agent._get_primitive_methods()),
-            ),
         )
