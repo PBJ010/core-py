@@ -116,6 +116,13 @@ class TestCacheKeyComputation:
         key2 = LLMCache.compute_cache_key(config2, "hello")
         assert key1 != key2
 
+    def test_different_extra_fields_produce_different_keys(self):
+        base = LLMConfig(provider="ollama", model="m")
+        tuned = LLMConfig(provider="ollama", model="m", extra={"think": False})
+        assert LLMCache.compute_cache_key(
+            base, "p"
+        ) != LLMCache.compute_cache_key(tuned, "p")
+
     def test_different_params_produce_different_keys(self):
         """Temperature differences must produce different cache keys."""
         config1 = LLMConfig(
@@ -257,6 +264,48 @@ class TestOllamaLLM:
         payload = json.loads(mock_urlopen.call_args[0][0].data)
         assert payload["stream"] is False
 
+    def test_sends_generation_params_only_inside_options(self):
+        # Ollama ignores top-level sampling fields; they must live under "options".
+        config = LLMConfig(
+            provider="ollama",
+            model="llama2",
+            params=GenerationParams(temperature=0, max_tokens=64, stop=["```"]),
+        )
+        llm = OllamaLLM(config)
+        mock_response = _make_mock_response({"response": "x"})
+
+        with patch(
+            "urllib.request.urlopen", return_value=mock_response
+        ) as mock_urlopen:
+            llm.generate("test")
+
+        payload = json.loads(mock_urlopen.call_args[0][0].data)
+        assert payload["options"] == {
+            "temperature": 0,
+            "num_predict": 64,
+            "stop": ["```"],
+        }
+        assert "temperature" not in payload and "max_tokens" not in payload
+
+    def test_extra_merges_runtime_options_and_top_level_flags(self):
+        config = LLMConfig(
+            provider="ollama",
+            model="qwen3:1.7b",
+            params=GenerationParams(temperature=0),
+            extra={"options": {"num_ctx": 32768}, "think": False},
+        )
+        llm = OllamaLLM(config)
+        mock_response = _make_mock_response({"response": "x"})
+
+        with patch(
+            "urllib.request.urlopen", return_value=mock_response
+        ) as mock_urlopen:
+            llm.generate("test")
+
+        payload = json.loads(mock_urlopen.call_args[0][0].data)
+        assert payload["options"] == {"temperature": 0, "num_ctx": 32768}
+        assert payload["think"] is False
+
     def test_wraps_url_error_with_context(self):
         config = LLMConfig(provider="ollama", model="llama2")
         llm = OllamaLLM(config)
@@ -330,6 +379,33 @@ class TestAnthropicLLM:
         request = mock_urlopen.call_args[0][0]
         assert request.headers["X-api-key"] == "sk-ant-test"
         assert request.headers["Anthropic-version"] == "2023-06-01"
+
+    def test_marks_definitions_prefix_as_cacheable_block(self):
+        from opensymbolicai.models import PROMPT_DEFINITIONS_END
+
+        config = LLMConfig(provider="anthropic", model="claude-3", api_key="key")
+        llm = AnthropicLLM(config)
+        mock_response = _make_mock_response({"content": [{"text": "x"}], "usage": {}})
+        prompt = f"definitions\n{PROMPT_DEFINITIONS_END}\n## Task\nrequest"
+
+        with patch(
+            "urllib.request.urlopen", return_value=mock_response
+        ) as mock_urlopen:
+            llm.generate(prompt)
+            llm.generate("plain prompt")
+
+        calls = mock_urlopen.call_args_list
+        first = json.loads(calls[0][0][0].data)["messages"][0]["content"]
+        assert first == [
+            {
+                "type": "text",
+                "text": f"definitions\n{PROMPT_DEFINITIONS_END}",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": "\n## Task\nrequest"},
+        ]
+        second = json.loads(calls[1][0][0].data)["messages"][0]["content"]
+        assert second == "plain prompt"
 
     def test_defaults_max_tokens_to_1024(self):
         config = LLMConfig(provider="anthropic", model="claude-3", api_key="key")

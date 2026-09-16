@@ -308,6 +308,15 @@ All exceptions serialize to dict for trace persistence and carry optional `code`
 
 Ollama, OpenAI, Anthropic, Fireworks, Groq, or add your own.
 
+Blueprint prompts put the stable definitions (primitives, decompositions, types)
+before the per-request context, so prefix caching applies without extra work:
+vLLM/OpenAI-compatible servers (`provider="openai"` + `base_url`) reuse the cached
+prefix automatically, and the Anthropic provider marks the definitions block with
+`cache_control`. Provider-specific request fields go in `LLMConfig.extra`; for
+Ollama, sampling parameters are sent under `options` and runtime settings belong
+there too, e.g. `extra={"options": {"num_ctx": 32768}, "think": False}` for
+reasoning models whose prompts exceed the 4,096-token default context.
+
 ---
 
 ## Benchmarks

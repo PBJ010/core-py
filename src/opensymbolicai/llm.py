@@ -109,6 +109,14 @@ class LLMConfig(BaseModel):
         default_factory=GenerationParams,
         description="Generation parameters",
     )
+    extra: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Provider-specific request fields merged into the request body. "
+            "For Ollama, runtime options such as num_ctx belong under "
+            "extra['options'] and flags such as think at the top level."
+        ),
+    )
 
     @property
     def provider_name(self) -> str:
@@ -149,6 +157,7 @@ class LLMCache(ABC):
             "model": config.model,
             "prompt": prompt,
             "params": config.params.to_api_dict(),
+            "extra": config.extra,
         }
         key_data = json.dumps(key_dict, sort_keys=True)
         return hashlib.sha256(key_data.encode("utf-8")).hexdigest()
@@ -313,15 +322,41 @@ class OllamaLLM(LLM):
         super().__init__(config, cache)
         self.base_url = (config.base_url or self.DEFAULT_BASE_URL).rstrip("/")
 
-    def _generate_impl(self, prompt: str, **kwargs: Any) -> LLMResponse:
-        url = f"{self.base_url}/api/generate"
-        payload = {
+    # Ollama reads sampling parameters only from the nested ``options`` object;
+    # top-level ``temperature``/``max_tokens`` are silently ignored.
+    _OPTION_NAMES: dict[str, str] = {
+        "temperature": "temperature",
+        "top_p": "top_p",
+        "top_k": "top_k",
+        "max_tokens": "num_predict",
+        "stop": "stop",
+        "frequency_penalty": "frequency_penalty",
+        "presence_penalty": "presence_penalty",
+        "seed": "seed",
+    }
+
+    def _build_payload(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
+        params = self.config.params.to_api_dict()
+        options = {
+            self._OPTION_NAMES[key]: value
+            for key, value in params.items()
+            if key in self._OPTION_NAMES
+        }
+        extra = dict(self.config.extra)
+        options.update(extra.pop("options", None) or {})
+        payload: dict[str, Any] = {
             "model": self.config.model,
             "prompt": prompt,
             "stream": False,
-            **self.config.params.to_api_dict(),
+            **extra,
             **kwargs,
         }
+        payload["options"] = {**options, **(kwargs.get("options") or {})}
+        return payload
+
+    def _generate_impl(self, prompt: str, **kwargs: Any) -> LLMResponse:
+        url = f"{self.base_url}/api/generate"
+        payload = self._build_payload(prompt, **kwargs)
 
         request = urllib.request.Request(
             url,
@@ -406,6 +441,7 @@ class _OpenAICompatibleLLM(LLM):
             "model": self.config.model,
             "messages": [{"role": "user", "content": prompt}],
             **self.config.params.to_api_dict(),
+            **self.config.extra,
             **kwargs,
         }
         request = self._build_request(url, payload)
@@ -448,9 +484,10 @@ class AnthropicLLM(LLM):
 
         payload = {
             "model": self.config.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": self._content_blocks(prompt)}],
             "max_tokens": max_tokens,
             **params,
+            **self.config.extra,
             **kwargs,
         }
 
@@ -478,6 +515,31 @@ class AnthropicLLM(LLM):
                 provider=self.config.provider_name,
                 model=self.config.model,
             )
+
+
+    @staticmethod
+    def _content_blocks(prompt: str) -> str | list[dict[str, Any]]:
+        """Mark the blueprint definitions prefix as a cacheable content block.
+
+        Blueprint prompts place the stable primitive/decomposition definitions
+        before the per-request context. Anthropic only reuses a prompt prefix
+        when a block carries ``cache_control``; everything after the marker is
+        left uncached so the request-specific tail never pollutes the cache.
+        """
+        from opensymbolicai.models import PROMPT_DEFINITIONS_END
+
+        index = prompt.find(PROMPT_DEFINITIONS_END)
+        if index < 0:
+            return prompt
+        cut = index + len(PROMPT_DEFINITIONS_END)
+        return [
+            {
+                "type": "text",
+                "text": prompt[:cut],
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": prompt[cut:]},
+        ]
 
 
 class FireworksLLM(_OpenAICompatibleLLM):
