@@ -344,15 +344,21 @@ class OllamaLLM(LLM):
         }
         extra = dict(self.config.extra)
         options.update(extra.pop("options", None) or {})
-        payload: dict[str, Any] = {
+        # Per-call overrides such as generate(prompt, max_tokens=...) are
+        # sampling parameters too, so they are mapped the same way.
+        overrides = dict(kwargs)
+        for key in list(overrides):
+            if key in self._OPTION_NAMES:
+                options[self._OPTION_NAMES[key]] = overrides.pop(key)
+        options.update(overrides.pop("options", None) or {})
+        return {
             "model": self.config.model,
             "prompt": prompt,
             "stream": False,
             **extra,
-            **kwargs,
+            **overrides,
+            "options": options,
         }
-        payload["options"] = {**options, **(kwargs.get("options") or {})}
-        return payload
 
     def _generate_impl(self, prompt: str, **kwargs: Any) -> LLMResponse:
         url = f"{self.base_url}/api/generate"

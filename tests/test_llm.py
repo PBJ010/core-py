@@ -306,6 +306,22 @@ class TestOllamaLLM:
         assert payload["options"] == {"temperature": 0, "num_ctx": 32768}
         assert payload["think"] is False
 
+    def test_per_call_overrides_are_mapped_into_options(self):
+        config = LLMConfig(
+            provider="ollama", model="llama2", params=GenerationParams(temperature=0.5)
+        )
+        llm = OllamaLLM(config)
+        mock_response = _make_mock_response({"response": "x"})
+
+        with patch(
+            "urllib.request.urlopen", return_value=mock_response
+        ) as mock_urlopen:
+            llm.generate("test", max_tokens=1000, temperature=0)
+
+        payload = json.loads(mock_urlopen.call_args[0][0].data)
+        assert payload["options"] == {"temperature": 0, "num_predict": 1000}
+        assert "max_tokens" not in payload and "temperature" not in payload
+
     def test_wraps_url_error_with_context(self):
         config = LLMConfig(provider="ollama", model="llama2")
         llm = OllamaLLM(config)
